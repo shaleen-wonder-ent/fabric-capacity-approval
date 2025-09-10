@@ -1,5 +1,5 @@
 
-# Fabric Capacity Approval Kit (Terraform + GitHub Actions)
+# Fabric Capacity Approval Kit (Terraform + GitHub Actions/ Azure Logic Apps)
 
 This repo enforces **central approval** for Microsoft Fabric capacity creation by combining:
 - Azure Policy **deny** on `Microsoft.Fabric/capacities`
