@@ -1,0 +1,304 @@
+{
+    "definition": {
+        "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowDefinition.json#",
+        "actions": {
+            "Parse_Request_Body": {
+                "type": "ParseJson",
+                "inputs": {
+                    "code": "const input = workflowContext.trigger.outputs.body;\nconst errors = [];\n\n// Validate capacity name format\nif (!/^[a-z][a-z0-9]{2,62}$/.test(input.capacityName)) {\n    errors.push('Capacity name must be 3-63 characters, start with a letter, and contain only lowercase letters and numbers');\n}\n\n// Validate SKU\nconst validSkus = ['F2', 'F4', 'F8', 'F16', 'F32'];\nif (!validSkus.includes(input.skuName)) {\n    errors.push('Invalid SKU. Must be one of: ' + validSkus.join(', '));\n}\n\n// Validate email formats\nconst emailRegex = /^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/;\nif (!emailRegex.test(input.requesterEmail)) {\n    errors.push('Invalid requester email format');\n}\n\n// Check admin members format\nconst adminMembers = input.adminMembers.split(',');\nfor (const admin of adminMembers) {\n    if (!emailRegex.test(admin.trim()) && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(admin.trim())) {\n        errors.push('Invalid admin member format: ' + admin);\n    }\n}\n\nreturn {\n    isValid: errors.length === 0,\n    errors: errors\n};"
+                },
+                "runAfter": {}
+            },
+            "Check_Validation_Result": {
+                "type": "If",
+                "expression": {
+                    "and": [
+                        {
+                                "equals": [
+                                "@body('Parse_Request_Body').isValid",
+                                true
+                            ]
+                        }
+                    ]
+                },
+                "actions": {
+                    "Create_Teams_Approval": {
+                        "type": "ApiConnectionWebhook",
+                        "inputs": {
+                            "host": {
+                                "connection": {
+                                    "name": "@parameters('$connections')['teams']['connectionId']"
+                                }
+                            },
+                            "body": {
+                                "notificationUrl": "@{listCallbackUrl()}",
+                                "message": {
+                                    "title": "Fabric Capacity Approval Request",
+                                    "subtitle": "Please review and approve/reject this request",
+                                    "facts": [
+                                        {
+                                            "name": "Requester",
+                                            "value": "@{triggerBody()?['requesterEmail']}"
+                                        },
+                                        {
+                                            "name": "Capacity Name",
+                                            "value": "@{triggerBody()?['capacityName']}"
+                                        },
+                                        {
+                                            "name": "SKU",
+                                            "value": "@{triggerBody()?['skuName']}"
+                                        },
+                                        {
+                                            "name": "Location",
+                                            "value": "@{triggerBody()?['location']}"
+                                        },
+                                        {
+                                            "name": "Resource Group",
+                                            "value": "@{triggerBody()?['resourceGroup']}"
+                                        },
+                                        {
+                                            "name": "Justification",
+                                            "value": "@{triggerBody()?['justification']}"
+                                        }
+                                    ]
+                                },
+                                "options": {
+                                    "responseOptions": [
+                                        "Approve",
+                                        "Reject"
+                                    ]
+                                }
+                            }
+                        },
+                        "runAfter": {}
+                    },
+                    "Check_Approval": {
+                        "type": "If",
+                        "expression": {
+                            "equals": [
+                                "@body('Create_Teams_Approval').SelectedOption",
+                                "Approve"
+                            ]
+                        },
+                        "actions": {
+                            "Create_Policy_Exemption": {
+                                "type": "Http",
+                                "inputs": {
+                                    "method": "PUT",
+                                    "uri": "https://management.azure.com/subscriptions/@{triggerBody()?['subscriptionId']}/resourceGroups/@{triggerBody()?['resourceGroup']}/providers/Microsoft.Authorization/policyExemptions/temp-exempt-@{workflow()?['run']['name']}?api-version=2020-07-01-preview",
+                                    "authentication": {
+                                        "type": "ManagedServiceIdentity"
+                                    },
+                                    "body": {
+                                        "properties": {
+                                            "policyAssignmentId": "@{triggerBody()?['policyAssignmentId']}",
+                                            "exemptionCategory": "Waiver",
+                                            "expiresOn": "@{addMinutes(utcNow(), 15)}",
+                                            "displayName": "Temp exemption for Fabric capacity provisioning"
+                                        }
+                                    }
+                                },
+                                "retryPolicy": {
+                                    "type": "exponential",
+                                    "count": 2,
+                                    "interval": "PT5S"
+                                },
+                                "runAfter": {}
+                            },
+                            "Create_Fabric_Capacity": {
+                                "type": "Http",
+                                "inputs": {
+                                    "method": "PUT",
+                                    "uri": "https://management.azure.com/subscriptions/@{triggerBody()?['subscriptionId']}/resourceGroups/@{triggerBody()?['resourceGroup']}/providers/Microsoft.Fabric/capacities/@{triggerBody()?['capacityName']}?api-version=2022-07-01-preview",
+                                    "authentication": {
+                                        "type": "ManagedServiceIdentity"
+                                    },
+                                    "body": {
+                                        "sku": {
+                                            "name": "@{triggerBody()?['skuName']}",
+                                            "tier": "Fabric"
+                                        },
+                                        "properties": {
+                                            "administration": {
+                                                "members": "@{split(triggerBody()?['adminMembers'], ',')}"
+                                            }
+                                        },
+                                        "location": "@{triggerBody()?['location']}"
+                                    }
+                                },
+                                "retryPolicy": {
+                                    "type": "exponential",
+                                    "count": 2,
+                                    "interval": "PT5S"
+                                },
+                                "runAfter": {
+                                    "Create_Policy_Exemption": [
+                                        "Succeeded"
+                                    ]
+                                }
+                            },
+                            "Remove_Policy_Exemption": {
+                                "type": "Http",
+                                "inputs": {
+                                    "method": "DELETE",
+                                    "uri": "https://management.azure.com/subscriptions/@{triggerBody()?['subscriptionId']}/resourceGroups/@{triggerBody()?['resourceGroup']}/providers/Microsoft.Authorization/policyExemptions/temp-exempt-@{workflow()?['run']['name']}?api-version=2020-07-01-preview",
+                                    "authentication": {
+                                        "type": "ManagedServiceIdentity"
+                                    }
+                                },
+                                "retryPolicy": {
+                                    "type": "exponential",
+                                    "count": 2,
+                                    "interval": "PT5S"
+                                },
+                                "runAfter": {
+                                    "Create_Fabric_Capacity": [
+                                        "Succeeded",
+                                        "Failed",
+                                        "Cancelled"
+                                    ]
+                                }
+                            },
+                            "Send_Success_Email": {
+                                "type": "ApiConnection",
+                                "inputs": {
+                                    "host": {
+                                        "connection": {
+                                            "name": "@parameters('$connections')['office365']['connectionId']"
+                                        }
+                                    },
+                                    "method": "POST",
+                                    "path": "/v2/Mail",
+                                    "body": {
+                                        "To": "@{triggerBody()?['requesterEmail']}",
+                                        "Subject": "Fabric Capacity Request Approved and Provisioned",
+                                        "Body": "<p>Your Fabric Capacity request has been approved and provisioned:</p><ul><li>Name: @{triggerBody()?['capacityName']}</li><li>SKU: @{triggerBody()?['skuName']}</li><li>Resource Group: @{triggerBody()?['resourceGroup']}</li></ul>",
+                                        "IsHtml": true
+                                    }
+                                },
+                                "runAfter": {
+                                    "Remove_Policy_Exemption": [
+                                        "Succeeded"
+                                    ]
+                                }
+                            }
+                        },
+                        "else": {
+                            "actions": {
+                                "Send_Rejection_Email": {
+                                    "type": "ApiConnection",
+                                    "inputs": {
+                                        "host": {
+                                            "connection": {
+                                                "name": "@parameters('$connections')['office365']['connectionId']"
+                                            }
+                                        },
+                                        "method": "POST",
+                                        "path": "/v2/Mail",
+                                        "body": {
+                                            "To": "@{triggerBody()?['requesterEmail']}",
+                                            "Subject": "Fabric Capacity Request Rejected",
+                                            "Body": "<p>Your Fabric Capacity request has been rejected.</p><ul><li>Name: @{triggerBody()?['capacityName']}</li><li>SKU: @{triggerBody()?['skuName']}</li><li>Resource Group: @{triggerBody()?['resourceGroup']}</li></ul>",
+                                            "IsHtml": true
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "runAfter": {
+                            "Create_Teams_Approval": [
+                                "Succeeded"
+                            ]
+                        }
+                    }
+                },
+                "else": {
+                    "actions": {
+                        "Send_Validation_Error_Email": {
+                            "type": "ApiConnection",
+                            "inputs": {
+                                "host": {
+                                    "connection": {
+                                        "name": "@parameters('$connections')['office365']['connectionId']"
+                                    }
+                                },
+                                "method": "POST",
+                                "path": "/v2/Mail",
+                                "body": {
+                                    "To": "@{triggerBody()?['requesterEmail']}",
+                                    "Subject": "Fabric Capacity Request - Validation Failed",
+                                    "Body": "<p>Your Fabric Capacity request failed validation:</p><ul>@{join(body('Parse_Request_Body').errors, '</li><li>')}</ul>",
+                                    "IsHtml": true
+                                }
+                            }
+                        }
+                    }
+                },
+                "runAfter": {
+                    "Parse_Request_Body": [
+                        "Succeeded"
+                    ]
+                }
+            }
+        },
+        "triggers": {
+            "manual": {
+                "type": "Request",
+                "kind": "Http",
+                "inputs": {
+                    "schema": {
+                        "properties": {
+                            "adminMembers": {
+                                "type": "string"
+                            },
+                            "capacityName": {
+                                "type": "string"
+                            },
+                            "justification": {
+                                "type": "string"
+                            },
+                            "location": {
+                                "type": "string"
+                            },
+                            "policyAssignmentId": {
+                                "type": "string"
+                            },
+                            "requesterEmail": {
+                                "type": "string"
+                            },
+                            "resourceGroup": {
+                                "type": "string"
+                            },
+                            "skuName": {
+                                "type": "string"
+                            },
+                            "subscriptionId": {
+                                "type": "string"
+                            }
+                        },
+                        "type": "object"
+                    }
+                }
+            }
+        },
+        "contentVersion": "1.0.0.0",
+        "outputs": {}
+    },
+    "parameters": {
+        "$connections": {
+            "type": "Object",
+            "value": {
+                "teams": {
+                    "connectionId": "/subscriptions/95ad0027-ffa7-4f15-8a92-76112d0073d9/resourceGroups/{resource-group}/providers/Microsoft.Web/connections/teams",
+                    "connectionName": "teams",
+                    "id": "/subscriptions/95ad0027-ffa7-4f15-8a92-76112d0073d9/providers/Microsoft.Web/locations/{location}/managedApis/teams"
+                },
+                "office365": {
+                    "connectionId": "/subscriptions/{subscription-id}/resourceGroups/{resource-group}/providers/Microsoft.Web/connections/office365",
+                    "connectionName": "office365",
+                    "id": "/subscriptions/{subscription-id}/providers/Microsoft.Web/locations/{location}/managedApis/office365"
+                }
+            }
+        }
+    }
+}

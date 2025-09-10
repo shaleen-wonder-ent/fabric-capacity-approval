@@ -1,0 +1,114 @@
+# Workflow to deploy Azure Fabric Capacity using Terraform with temporary policy exemption
+name: Deploy Fabric Capacity (Terraform)
+
+# Trigger: Manual workflow dispatch with configurable parameters
+on:
+  workflow_dispatch:
+    inputs:
+      # Azure subscription where Fabric capacity will be deployed
+      subscriptionId:     { description: Azure Subscription ID, default: '95ad0027-ffa7-4f15-8a92-76112d0073d9', required: true }
+      # Target resource group for the Fabric capacity
+      resourceGroup:      { description: Target Resource Group, default: fabricRG, required: true }
+      # Azure region for deployment
+      location:           { description: Azure region, default: eastus, required: true }
+      # Name of the Fabric capacity resource
+      capacityName:       { description: Fabric capacity name, default: fabricstcapacity, required: true }
+      # SKU size for the Fabric capacity (determines performance and cost)
+      skuName:            { description: Fabric SKU (F2|F4|F8|F16|F32|...), default: F2, required: true }
+      # List of administrators for the Fabric capacity
+      adminMembersCsv:    { description: Comma-separated admin UPNs or SP objectIds, default: 'shaleenthapa@shaleenthapahotmail.onmicrosoft.com', required: true }
+      # ID of the policy assignment to be temporarily exempted
+      policyAssignmentId: { description: Resource ID of the deny policy assignment, default: '/subscriptions/95ad0027-ffa7-4f15-8a92-76112d0073d9/providers/Microsoft.Authorization/policyAssignments/35c97326601c43479b3e7abd',required: true }
+      # Duration for which the policy exemption remains valid
+      exemptionTtlMinutes:  { description: Minutes until exemption auto-expires, default: "15", required: true }
+
+jobs:
+  deploy:
+    # Use latest Ubuntu runner for deployment
+    runs-on: ubuntu-latest
+    # Target environment for deployment (contains required secrets)
+    environment: fabric-prod
+    # Required permissions for OIDC authentication and repo access
+    permissions:
+      id-token: write  # Required for Azure OIDC auth
+      contents: read   # Required for repo checkout
+
+    steps:
+      # Step 1: Checkout repository code
+      - uses: actions/checkout@v4
+
+      # Step 2: Authenticate with Azure using OIDC
+      - uses: azure/login@v2
+        with:
+          client-id:     ${{ secrets.AZURE_CLIENT_ID }}      # Service principal client ID
+          tenant-id:     ${{ secrets.AZURE_TENANT_ID }}      # Azure AD tenant ID
+          subscription-id: ${{ github.event.inputs.subscriptionId }}  # Target subscription
+
+      # Step 3: Create temporary policy exemption and set up variables
+      - name: Compute vars & create exemption
+        id: vars
+        shell: bash
+        run: |
+          # Enable strict error handling
+          set -euo pipefail
+          # Generate unique exemption name using GitHub run ID
+          EXEMPTION_NAME="temp-exempt-${{ github.run_id }}"
+          # Construct full resource scope for the exemption
+          SCOPE="/subscriptions/${{ github.event.inputs.subscriptionId }}/resourceGroups/${{ github.event.inputs.resourceGroup }}"
+          # Calculate exemption expiry time in UTC
+          EXPIRES_ON="$(date -u -d "+${{ github.event.inputs.exemptionTtlMinutes }} minutes" +"%Y-%m-%dT%H:%M:%SZ")"
+          # Store variables for use in later steps
+          echo "EXEMPTION_NAME=$EXEMPTION_NAME" >> $GITHUB_OUTPUT
+          echo "SCOPE=$SCOPE" >> $GITHUB_OUTPUT
+          # Create temporary policy exemption
+          az policy exemption create \
+            --name "$EXEMPTION_NAME" \
+            --scope "$SCOPE" \
+            --policy-assignment "${{ github.event.inputs.policyAssignmentId }}" \
+            --exemption-category Waiver \
+            --expires-on "$EXPIRES_ON" \
+            --display-name "Temp exemption for Fabric capacity provisioning (Terraform)" \
+            --only-show-errors
+
+      # Step 4: Install Terraform CLI
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      # Step 5: Execute Terraform deployment
+      - name: Terraform init/plan/apply
+        working-directory: infra/terraform
+        run: |
+          # Enable strict error handling
+          set -euo pipefail
+          # Configure Azure authentication for Terraform
+          export ARM_USE_OIDC=true                                    # Enable OIDC auth
+          export ARM_TENANT_ID=${{ secrets.AZURE_TENANT_ID }}        # Azure AD tenant
+          export ARM_CLIENT_ID=${{ secrets.AZURE_CLIENT_ID }}        # Service principal
+          export ARM_SUBSCRIPTION_ID=${{ github.event.inputs.subscriptionId }}  # Subscription
+
+          # Initialize Terraform working directory
+          terraform init
+          # Create execution plan with input variables
+          terraform plan -input=false \
+            -var "subscription_id=${{ github.event.inputs.subscriptionId }}" \
+            -var "resource_group=${{ github.event.inputs.resourceGroup }}" \
+            -var "location=${{ github.event.inputs.location }}" \
+            -var "capacity_name=${{ github.event.inputs.capacityName }}" \
+            -var "sku_name=${{ github.event.inputs.skuName }}" \
+            -var "admin_members=${{ github.event.inputs.adminMembersCsv }}"
+          # Apply the configuration automatically
+          terraform apply -auto-approve -input=false \
+            -var "subscription_id=${{ github.event.inputs.subscriptionId }}" \
+            -var "resource_group=${{ github.event.inputs.resourceGroup }}" \
+            -var "location=${{ github.event.inputs.location }}" \
+            -var "capacity_name=${{ github.event.inputs.capacityName }}" \
+            -var "sku_name=${{ github.event.inputs.skuName }}" \
+            -var "admin_members=${{ github.event.inputs.adminMembersCsv }}"
+
+      # Step 6: Cleanup - Remove temporary policy exemption
+      - name: Remove Policy Exemption (always)
+        if: always()  # Ensures cleanup runs even if previous steps fail
+        run: |
+          az policy exemption delete \
+            --name  "${{ steps.vars.outputs.EXEMPTION_NAME }}" \
+            --scope "${{ steps.vars.outputs.SCOPE }}" || true  # Continue on error

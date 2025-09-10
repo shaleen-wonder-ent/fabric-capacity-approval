@@ -1,0 +1,28 @@
+
+{
+  "properties": {
+    "displayName": "Deny Microsoft Fabric capacity creation",
+    "policyType": "Custom",
+    "mode": "All",
+    "description": "Blocks creation of Microsoft.Fabric/capacities to enforce central approval.",
+    "metadata": {
+      "category": "Microsoft Fabric",
+      "documentation": {
+        "purpose": "Prevent unapproved creation of Microsoft.Fabric/capacities. All capacity provisioning must go through centralized approval.",
+        "notes": "JSON does not support inline comments; to keep human-readable annotations without breaking the policy schema, explanatory text is stored under metadata.documentation. Azure Policy ignores extra metadata fields, so this is safe for deployment.",
+        "sections": {
+          "displayName": "Human-friendly policy name shown in the Azure portal.",
+          "policyType": "Policy classification. 'Custom' indicates a user-defined policy.",
+          "mode": "Enforcement mode. 'All' means this policy is evaluated for all resource types.",
+          "description": "Short description explaining intent and scope.",
+          "policyRule": "If a resource's type equals Microsoft.Fabric/capacities, then the policy effect is 'deny'. This blocks creation and update requests that would create such resources.",
+          "effect": "deny - Prevents creation. To allow exceptions use Policy Exemptions or change the effect to Audit/Disabled for monitoring only."
+        }
+      }
+    },
+    "policyRule": {
+      "if": { "field": "type", "equals": "Microsoft.Fabric/capacities" },
+      "then": { "effect": "deny" }
+    }
+  }
+}

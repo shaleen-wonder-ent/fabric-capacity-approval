@@ -1,0 +1,162 @@
+{
+    "definition": {
+        "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowDefinition.json#",
+        "actions": {
+            "Parse_Request_Body": {
+                "type": "ParseJson",
+                "inputs": {
+                    "content": "@triggerBody()",
+                    "schema": {
+                        "properties": {
+                            "adminMembers": {
+                                "type": "string"
+                            },
+                            "capacityName": {
+                                "type": "string"
+                            },
+                            "location": {
+                                "type": "string"
+                            },
+                            "policyAssignmentId": {
+                                "type": "string"
+                            },
+                            "resourceGroup": {
+                                "type": "string"
+                            },
+                            "skuName": {
+                                "type": "string"
+                            },
+                            "subscriptionId": {
+                                "type": "string"
+                            }
+                        },
+                        "type": "object"
+                    }
+                },
+                "runAfter": {}
+            },
+            "Create_Policy_Exemption": {
+                "type": "Http",
+                "inputs": {
+                    "method": "PUT",
+                    "uri": "https://management.azure.com/subscriptions/@{triggerBody()?['subscriptionId']}/resourceGroups/@{triggerBody()?['resourceGroup']}/providers/Microsoft.Authorization/policyExemptions/temp-exempt-@{workflow()?['run']['name']}?api-version=2020-07-01-preview",
+                    "authentication": {
+                        "type": "ManagedServiceIdentity"
+                    },
+                    "body": {
+                        "properties": {
+                            "policyAssignmentId": "@{triggerBody()?['policyAssignmentId']}",
+                            "exemptionCategory": "Waiver",
+                            "expiresOn": "@{addMinutes(utcNow(), 15)}",
+                            "displayName": "Temp exemption for Fabric capacity provisioning"
+                        }
+                    }
+                },
+                "runAfter": {
+                    "Parse_Request_Body": [
+                        "Succeeded"
+                    ]
+                }
+            },
+            "Debug_Request_Body": {
+                "type": "Compose",
+                "inputs": {
+                    "sku": {
+                        "name": "@{triggerBody()?['skuName']}",
+                        "tier": "Fabric"
+                    },
+                    "properties": {
+                        "administration": {
+                            "members": [
+                                "@{triggerBody()?['adminMembers']}"
+                            ]
+                        }
+                    },
+                    "location": "@{triggerBody()?['location']}"
+                },
+                "runAfter": {
+                    "Parse_Request_Body": [
+                        "Succeeded"
+                    ]
+                }
+            },
+            "Create_Fabric_Capacity": {
+                "type": "Http",
+                "inputs": {
+                    "method": "PUT",
+                    "uri": "https://management.azure.com/subscriptions/@{triggerBody()?['subscriptionId']}/resourceGroups/@{triggerBody()?['resourceGroup']}/providers/Microsoft.Fabric/capacities/@{triggerBody()?['capacityName']}?api-version=2022-07-01-preview",
+                    "authentication": {
+                        "type": "ManagedServiceIdentity"
+                    },
+                    "body": "@outputs('Debug_Request_Body')"
+                },
+                "runAfter": {
+                    "Debug_Request_Body": [
+                        "Succeeded"
+                    ],
+                    "Create_Policy_Exemption": [
+                        "Succeeded"
+                    ]
+                }
+            },
+            "Remove_Policy_Exemption": {
+                "type": "Http",
+                "inputs": {
+                    "method": "DELETE",
+                    "uri": "https://management.azure.com/subscriptions/@{triggerBody()?['subscriptionId']}/resourceGroups/@{triggerBody()?['resourceGroup']}/providers/Microsoft.Authorization/policyExemptions/temp-exempt-@{workflow()?['run']['name']}?api-version=2020-07-01-preview",
+                    "authentication": {
+                        "type": "ManagedServiceIdentity"
+                    }
+                },
+                "runAfter": {
+                    "Create_Fabric_Capacity": [
+                        "Succeeded"
+                    ]
+                }
+            }
+        },
+        "triggers": {
+            "manual": {
+                "type": "Request",
+                "kind": "Http",
+                "inputs": {
+                    "schema": {
+                        "properties": {
+                            "adminMembers": {
+                                "type": "string",
+                                "description": "Comma-separated list of admin UPNs or SP objectIds"
+                            },
+                            "capacityName": {
+                                "type": "string",
+                                "description": "Name of the Fabric capacity (3-63 chars, lowercase letters & numbers)"
+                            },
+                            "location": {
+                                "type": "string",
+                                "description": "Azure region (e.g., eastus)"
+                            },
+                            "policyAssignmentId": {
+                                "type": "string",
+                                "description": "Resource ID of the policy assignment"
+                            },
+                            "resourceGroup": {
+                                "type": "string",
+                                "description": "Target resource group name"
+                            },
+                            "skuName": {
+                                "type": "string",
+                                "description": "Fabric SKU (F2, F4, F8, F16, F32)"
+                            },
+                            "subscriptionId": {
+                                "type": "string",
+                                "description": "Azure Subscription ID"
+                            }
+                        },
+                        "type": "object"
+                    }
+                }
+            }
+        },
+        "contentVersion": "1.0.0.0",
+        "outputs": {}
+    }
+}
