@@ -7,12 +7,12 @@
 
 # 2. Example command (replace with your values):
 .\invoke-fabric-approval.ps1 `
-    -LogicAppUrl "https://prod-35.eastus.logic.azure.com:443/workflows/2451886856834928895b63d4387e3119/triggers/manual/paths/invoke?api-version=2016-10-01&sp=%2Ftriggers%2Fmanual%2Frun&sv=1.0&sig=NVyigD8YdLmWzwK5T49Z4KuTqu5UOdji5n7HqCOGrUI" `
+    -LogicAppUrl "https://<addURL>" `
     -CapacityName "fabcap101" `
     -Location "eastus" `
     -ResourceGroup "fabricRG" `
-    -SubscriptionId "95ad0027-ffa7-4f15-8a92-76112d0073d9" `
-    -PolicyAssignmentId "/subscriptions/95ad0027-ffa7-4f15-8a92-76112d0073d9/providers/Microsoft.Authorization/policyAssignments/35c97326601c43479b3e7abd" `
+    -SubscriptionId "<Subscription ID>" `
+    -PolicyAssignmentId "/subscriptions/<Subscription ID>/providers/Microsoft.Authorization/policyAssignments/<Policy Assignment ID>" `
     -SkuName "F2" `
     -AdminMembers "shaleenthapa@hotmail.com"
 
